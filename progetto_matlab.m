@@ -12,7 +12,7 @@ T_traj = 1.0; % La traiettoria deve essere eseguita in tot secondi
 t = 0:dt:T_traj; %vettore dei tempi
 N = length(t); %numero di step
 
-r = 0.2; % Raggio del cerchio 
+r = 0.4; % Raggio del cerchio 
 omega = 2*pi / T_traj;
 
 % Guadagni del controllore (ora abbiamo 6 gradi di libertà nel task: 3 rot, 3 trasl) 
@@ -30,7 +30,7 @@ p_init = T_init(1:3, 4);
 R_des = T_init(1:3, 1:3);
 
 % Definiamo il centro del cerchio (cerchio orizzontale rispetto alla partenza) 
-center = p_init + [r; 0; 0];
+center = [0.2; 0.2; 0.5];
 
 %% 4. Generazione della Traiettoria (OFFLINE) 
 % Pre-allocazione per un task a 6 gradi di libertà (Pose) 
