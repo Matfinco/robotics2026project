@@ -1,26 +1,46 @@
 clear; clc; close all;
 
-%% 1. Inizializzazione del Robot % Carichiamo il modello del Panda panda = loadrobot("frankaEmikaPanda", "DataFormat", "column"); ee_name = 'panda_hand'; % Nome del frame dell'end-effector
+%% 1. Inizializzazione del Robot % Carichiamo il modello del Panda 
+% "Panda" è il nome comune del robot frankaEmikaPanda: un braccio robotico
+% collaborativo a 7 giunti prodotto da Franka Emika, spesso usato in ricerca.
+panda = loadrobot("frankaEmikaPanda", "DataFormat", "column"); %column indica i dati in vett. colonna
+ee_name = 'panda_hand'; % Nome del frame dell'end-effector
 
-%% 2. Parametri di Simulazione e Traiettoria dt = 0.005; % Passo di integrazione molto fine per la stabilità in 3D T_traj = 3.0; % La traiettoria deve essere eseguita in 1 secondo t = 0:dt:T_traj; N = length(t);
+%% 2. Parametri di Simulazione e Traiettoria 
+dt = 0.005; % Passo di integrazione molto fine per la stabilità in 3D 
+T_traj = 1.0; % La traiettoria deve essere eseguita in tot secondi
+t = 0:dt:T_traj;
+N = length(t);
 
-r = 0.1; % Raggio del cerchio omega = 2*pi / T_traj;
+r = 0.1; % Raggio del cerchio 
+omega = 2*pi / T_traj;
 
-% Guadagni del controllore (ora abbiamo 6 gradi di libertà nel task: 3 rot, 3 trasl) K = 20 * eye(6);
+% Guadagni del controllore (ora abbiamo 6 gradi di libertà nel task: 3 rot, 3 trasl) 
+K = 20 * eye(6);
 
-%% 3. Configurazione Iniziale q = [0; -pi/4; 0; -3*pi/4; 0; pi/2; pi/4]; % I nostri 7 giunti di controllo
+%% 3. Configurazione Iniziale 
+q = [0; -pi/4; 0; -3*pi/4; 0; pi/2; pi/4]; % I nostri 7 giunti di controllo
 
-% Creiamo una versione "paddata" a 9 giunti aggiungendo due zeri per la pinza chiusa q_9 = [q; 0; 0];
+% Creiamo una versione "paddata" a 9 giunti aggiungendo due zeri per la pinza chiusa 
+q_9 = [q; 0; 0];
 
-% Usiamo q_9 per interrogare MATLAB T_init = getTransform(panda, q_9, ee_name); p_init = T_init(1:3, 4); R_des = T_init(1:3, 1:3);
+% Usiamo q_9 per interrogare MATLAB 
+T_init = getTransform(panda, q_9, ee_name); 
+p_init = T_init(1:3, 4); 
+R_des = T_init(1:3, 1:3);
 
+% Definiamo il centro del cerchio (cerchio orizzontale rispetto alla partenza) 
 center = p_init + [r; 0; 0];
 
-% Definiamo il centro del cerchio (cerchio orizzontale rispetto alla partenza) center = p_init + [r; 0; 0];
+%% 4. Generazione della Traiettoria (OFFLINE) 
+% Pre-allocazione per un task a 6 gradi di libertà (Pose) 
+Pd_dot = zeros(6, N); % Prime 3: vel angolare, Ultime 3: vel lineare 
+P_des = zeros(3, N);
 
-%% 4. Generazione della Traiettoria (OFFLINE) % Pre-allocazione per un task a 6 gradi di libertà (Pose) Pd_dot = zeros(6, N); % Prime 3: vel angolare, Ultime 3: vel lineare P_des = zeros(3, N);
-
-for k = 1:N % Posizione desiderata (Cerchio orizzontale sul piano XY locale) P_des(1, k) = center(1) - r * cos(omega * t(k)); P_des(2, k) = center(2) + r * sin(omega * t(k)); P_des(3, k) = center(3); % Altezza costante
+for k = 1:N % Posizione desiderata (Cerchio orizzontale sul piano XY locale) 
+    P_des(1, k) = center(1) - r * cos(omega * t(k)); 
+    P_des(2, k) = center(2) + r * sin(omega * t(k)); 
+    P_des(3, k) = center(3); % Altezza costante
 
     % Velocità lineare desiderata
     Pd_dot(4, k) =  r * omega * sin(omega * t(k));
@@ -29,10 +49,21 @@ for k = 1:N % Posizione desiderata (Cerchio orizzontale sul piano XY locale) P_d
     
     % Le velocità angolari desiderate (Pd_dot 1,2,3) restano 0 
     % perché l'orientamento è costante.
+end
     
-    %% 5. Setup Grafico fig = figure; % <-- SALVA L'HANDLE QUI! ASSEGNALO A 'fig' show(panda, q_9, 'Frames', 'off', 'PreservePlot', false); hold on; grid on; light; view(3); plot3(P_des(1,:), P_des(2,:), P_des(3,:), 'k--', 'LineWidth', 1.5);
+    %% 5. Setup Grafico 
+    fig = figure; % <-- SALVA L'HANDLE QUI! ASSEGNALO A 'fig' 
+    show(panda, q_9, 'Frames', 'off', 'PreservePlot', false); 
+    hold on; 
+    grid on; 
+    light; 
+    view(3); 
+    plot3(P_des(1,:), ...
+        P_des(2,:), ...
+        P_des(3,:), 'k--', 'LineWidth', 1.5);
     
-    %% 6. Loop di Controllo CLIK for k = 1:N
+    %% 6. Loop di Controllo CLIK 
+ for k = 1:N
     
     % --- CONTROLLO ESISTENZA FINESTRA ---
     if ~isgraphics(fig)
