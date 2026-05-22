@@ -17,7 +17,7 @@ omega = 2*pi / T_traj;
 K = 10 * eye(6);
 
 %% 3. Configurazione Iniziale 
-q = [0; -pi/4; 0; -3*pi/4; 0; pi/2; pi/4]; 
+q = [0; -pi/4; 0; -3*pi/4; 0; pi/8; pi/4]; 
 q_9 = [q; 0; 0];
 T_init = getTransform(panda, q_9, ee_name); 
 p_init = T_init(1:3, 4); 
@@ -31,8 +31,8 @@ P_start = [center(1) - r; center(2); center(3)];
 %% 4. FASE 1: Traiettoria di Allineamento
 % Calcoliamo quanti step servono basandoci sulla distanza
 distanza = norm(P_start - p_init);
-tempo_assestamento = distanza / 0.1; % ipotizziamo una convergenza a 0.1 m/s
-t_ass = 0:dt*10:tempo_assestamento; %*10 perche arrivava molto prima del previsto, velocità non costante
+tempo_assestamento = distanza / 1; % ipotizziamo una convergenza a 0.1 m/s
+t_ass = 0:dt:tempo_assestamento; %*10 perche arrivava molto prima del previsto, velocità non costante
 N_ass = length(t_ass);
 
 errors_ass = [];

@@ -8,7 +8,7 @@ ee_name = 'panda_hand'; % Nome del frame dell'end-effector
 
 %% 2. Parametri di Simulazione e Traiettoria 
 dt = 0.005; % Passo di integrazione molto fine per la stabilità in 3D 
-T_traj = 5.0; % La traiettoria deve essere eseguita in tot secondi
+T_traj = 1.0; % La traiettoria deve essere eseguita in tot secondi
 
 r = 0.4; % Raggio del cerchio 
 omega = 2*pi / T_traj;
