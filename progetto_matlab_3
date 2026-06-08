@@ -1,0 +1,265 @@
+clear; clc; close all;
+
+%% 1. Inizializzazione del Robot % Carichiamo il modello del Panda 
+% "Panda" è il nome comune del robot frankaEmikaPanda: un braccio robotico
+% collaborativo a 7 giunti prodotto da Franka Emika, spesso usato in ricerca.
+panda = loadrobot("frankaEmikaPanda", "DataFormat", "column"); %column indica i dati in vett. colonna
+ee_name = 'panda_hand'; % Nome del frame dell'end-effector
+
+%% 2. Parametri di Simulazione e Traiettoria 
+dt = 0.005; % Passo di integrazione molto fine per la stabilità in 3D 
+T_traj = 1.0; % La traiettoria deve essere eseguita in tot secondi
+
+r = 0.4; % Raggio del cerchio 
+omega = 2*pi / T_traj;
+
+% Guadagni del controllore (ora abbiamo 6 gradi di libertà nel task: 3 rot, 3 trasl) 
+K = 10 * eye(6);
+
+%% 3. Configurazione Iniziale 
+q = [pi/2; -pi/4; 0; -3*pi/4; 0; pi/2; pi/4];
+q_9 = [q; 0; 0];
+T_init = getTransform(panda, q_9, ee_name);
+p_init = T_init(1:3, 4);
+R_des = T_init(1:3, 1:3);
+
+center = [0.0; 0.0; 0.2];
+
+% Definiamo il punto di partenza: dove si trova il cerchio a t=0
+[P_start, t_start] = minDist(p_init, center, r, omega, dt, T_traj);
+%% 4 e 5. Generazione delle Traiettorie (OFFLINE)
+R_init = T_init(1:3, 1:3);
+
+% --- VARIABILE DA IMPOSTARE ---
+yaw_des = pi/3; % Es: 60 gradi. Cambia questo valore come preferisci!
+
+% Estraiamo gli angoli di Eulero (Yaw, Pitch, Roll) iniziali
+rpy_init = rotm2eul(R_init, 'ZYX'); 
+yaw_start = rpy_init(1);
+pitch_start = rpy_init(2);
+roll_start = rpy_init(3);
+
+% --- FASE A: Traiettoria di Allineamento ---
+T_align = 1.0; 
+t_align = 0:dt:T_align;
+N_align = length(t_align);
+
+s = 3*(t_align/T_align).^2 - 2*(t_align/T_align).^3;
+s_dot = 6*(t_align)/(T_align^2) - 6*(t_align.^2)/(T_align^3);
+
+P_des_align = zeros(3, N_align);
+Pd_dot_align = zeros(6, N_align);
+R_des_align = zeros(3, 3, N_align); 
+
+for k = 1:N_align
+    % Posizione e velocità lineare
+    P_des_align(:, k) = p_init + (P_start - p_init) * s(k);
+    Pd_dot_align(4:6, k) = (P_start - p_init) * s_dot(k);
+    
+    % Interpolazione dell'angolo Yaw (ruota dolcemente fino a yaw_des)
+    yaw_k = yaw_start + (yaw_des - yaw_start) * s(k);
+    R_des_align(:, :, k) = eul2rotm([yaw_k, pitch_start, roll_start], 'ZYX');
+    
+    % La velocità angolare è presente solo sull'asse Z durante l'allineamento
+    Pd_dot_align(1:3, k) = [0; 0; (yaw_des - yaw_start) * s_dot(k)]; 
+end
+
+% --- FASE B: Traiettoria Circolare ---
+t_circle = dt:dt:T_traj; 
+N_circle = length(t_circle);
+
+P_des_circle = zeros(3, N_circle);
+Pd_dot_circle = zeros(6, N_circle);
+R_des_circle = zeros(3, 3, N_circle);
+
+% La matrice di rotazione raggiunta alla fine della Fase A
+R_target = eul2rotm([yaw_des, pitch_start, roll_start], 'ZYX');
+
+for k = 1:N_circle 
+    % Posizione e velocità lineare
+    P_des_circle(1, k) = center(1) - r* cos(omega * (t_circle(k)+t_start)); 
+    P_des_circle(2, k) = center(2) + r * sin(omega * (t_circle(k)+t_start)); 
+    P_des_circle(3, k) = center(3); 
+    
+    Pd_dot_circle(4, k) =  r * omega * sin(omega * (t_circle(k)+t_start));
+    Pd_dot_circle(5, k) =  r * omega * cos(omega * (t_circle(k)+t_start));
+    Pd_dot_circle(6, k) =  0;
+    
+    % Manteniamo l'orientamento target rigidamente costante durante il cerchio
+    R_des_circle(:,:,k) = R_target;
+    Pd_dot_circle(1:3, k) = [0; 0; 0]; 
+end
+
+% --- FASE C: Concatenazione delle Traiettorie ---
+P_des_total = [P_des_align, P_des_circle];
+Pd_dot_total = [Pd_dot_align, Pd_dot_circle];
+R_des_total = cat(3, R_des_align, R_des_circle);
+
+N_total = size(P_des_total, 2);
+t_total = 0:dt:(N_total-1)*dt;
+
+%% 6. Setup Grafico 
+fig = figure; 
+show(panda, [q;0;0], 'Frames', 'off', 'PreservePlot', false); 
+hold on; grid on; light; view(3); 
+
+% Disegno la traiettoria totale
+plot3(P_des_total(1,:), P_des_total(2,:), P_des_total(3,:), 'k--', 'LineWidth', 1.5);
+plot3(P_start(1), P_start(2), P_start(3), 'ro', 'MarkerSize', 8, 'MarkerFaceColor', 'r'); % Punto di giunzione
+
+errors = zeros(3, N_total); % Pre-allocazione corretta della matrice errori
+rpy_curr_all = zeros(3, N_total); % Pre-allocazione per Roll, Pitch, Yaw
+
+%% 7. Loop di Controllo CLIK Unificato
+
+% Usiamo q_9 per estrarre lo stato iniziale
+q_9 = [q; 0; 0];
+T_curr = getTransform(panda, q_9, ee_name);
+R_curr = T_curr(1:3, 1:3); % Inizializzazione R_curr
+
+w_history = zeros(1, N_total);    % Vettore per salvare la mipollabilità
+
+k0 = 0.05; % Guadagno per massimizzare la manipolabilità (da tarare)
+delta_q = 1e-4; % Passo (perturbazione) per il calcolo del gradiente numerico
+
+for k = 1:N_total
+    
+    if ~isgraphics(fig)
+        disp('Hai chiuso la finestra. Simulazione interrotta!');
+        break;
+    end
+    
+    % 1. Cinematica Diretta
+    q_9 = [q; 0; 0];
+    T_curr = getTransform(panda, q_9, ee_name);
+    p_curr = T_curr(1:3, 4);
+    R_curr = T_curr(1:3, 1:3);
+    
+    % 2. Calcolo Errore
+    % Estraiamo i riferimenti specifici per l'istante k
+    P_des_k = P_des_total(:, k);
+    R_des_k = R_des_total(:,:,k); 
+    
+    % Errore di posizione
+    e_p = P_des_k - p_curr;
+    
+    % Errore di orientamento in SO(3) usando R_des_k dinamico
+    e_o = 0.5 * ( cross(R_curr(:,1), R_des_k(:,1)) + ...
+                  cross(R_curr(:,2), R_des_k(:,2)) + ...
+                  cross(R_curr(:,3), R_des_k(:,3)) );
+                  
+    % Vettore errore completo (6x1)
+    e = [e_o; e_p];
+    
+    errors(:, k) = e_p; % Salvataggio
+
+    % Estrai angoli correnti coerentemente con la traiettoria offline
+    rpy_curr_all(:, k) = rotm2eul(R_curr, 'ZYX')';
+
+    
+% 3. Calcolo Jacobiano
+    J_full = geometricJacobian(panda, q_9, ee_name);
+    J = J_full(:, 1:7);
+    
+    % --- INIZIO CALCOLO MANIPOLABILITA' E GRADIENTE ---
+    % Manipolabilità attuale
+    w_curr = sqrt(max(0, det(J * J'))); 
+
+    w_history(k) = w_curr;
+    grad_w = zeros(7, 1); % Inizializzazione vettore gradiente
+    
+    % Calcolo numerico del gradiente tramite differenze finite (in avanti)
+    for i = 1:7
+        q_temp = q;
+        q_temp(i) = q_temp(i) + delta_q; % Perturbiamo il giunto i-esimo
+        q_9_temp = [q_temp; 0; 0];
+        
+        % Ricalcoliamo lo Jacobiano nella configurazione perturbata
+        J_temp_full = geometricJacobian(panda, q_9_temp, ee_name);
+        J_temp = J_temp_full(:, 1:7);
+        
+        % Manipolabilità perturbata
+        w_temp = sqrt(max(0, det(J_temp * J_temp')));
+        
+        % Derivata parziale rispetto a q_i
+        grad_w(i) = (w_temp - w_curr) / delta_q;
+    end
+    
+    % Velocità dei giunti per il task secondario (massimizzazione -> segno +)
+    q0_dot = k0 * grad_w;
+    % --- FINE CALCOLO MANIPOLABILITA' ---
+    
+    % 4. Legge di Controllo CLIK (Primary Task)
+    v_task = Pd_dot_total(:, k) + K * e;
+    
+    % 5. Inversione con Proiezione nel Nucleo (Redundancy Resolution)
+    J_pinv = pinv(J);
+    I_7 = eye(7); % Matrice identità 7x7 per lo spazio dei giunti
+    
+    % Equazione: q_dot = J_pinv * v_task + (I - J_pinv * J) * q0_dot
+    q_dot = J_pinv * v_task + (I_7 - J_pinv * J) * q0_dot;
+    
+    % 6. Integrazione (Metodo di Eulero)
+    q = q + q_dot * dt;
+    
+    % 7. Aggiornamento Grafico
+    if mod(k, 10) == 0 % Aumentato a 10 per fluidità della simulazione
+        show(panda, [q; 0; 0], 'Frames', 'off', 'PreservePlot', false);
+        drawnow;
+        fprintf('Simulation time: %.2f di %.2f[s]\n', k*0.005, N_total*0.005);
+    end
+end
+
+%% Plot Errori Totali
+figure;
+plot(t_total, errors(1,:), 'r', 'LineWidth', 1.5); hold on;
+plot(t_total, errors(2,:), 'g', 'LineWidth', 1.5);
+plot(t_total, errors(3,:), 'b', 'LineWidth', 1.5);
+grid on;
+legend("Errore X", "Errore Y", "Errore Z");
+title("Errori di Inseguimento Traiettoria Completa");
+xlabel("Tempo [s]"); ylabel("Errore [m]");
+
+
+%% Plot Orientamento End-Effector (Angoli RPY)
+figure;
+plot(t_total, rad2deg(rpy_curr_all(1,:)), 'b', 'LineWidth', 1.5);
+grid on;
+legend("Yaw (theta_z)");
+title("Orientamento dell'End-Effector nel Tempo");
+xlabel("Tempo [s]"); 
+ylabel("Angolo [gradi]");
+
+%% Plot manipulabilità
+figure;
+plot(t_total, w_history, 'm', 'LineWidth', 2);
+grid on;
+legend("Manipulability");
+title("Indice di Manipolabilità w(q) nel Tempo");
+xlabel("Tempo [s]"); 
+ylabel("Manipolabilità");
+
+
+%% Funzioni
+function [P_start, t_start] = minDist(p_init, center, r, omega, dt, T_traj)
+    t = 0:dt:T_traj; 
+    N = length(t);
+    dist_min = inf; 
+    
+    P_start = zeros(3,1);
+    t_start = 0;
+    
+    for k = 1:N 
+        P_circle = [center(1) - r * cos(omega * t(k)); 
+                    center(2) + r * sin(omega * t(k)); 
+                    center(3)];
+        
+        dist = norm(P_circle - p_init);
+        
+        if (dist < dist_min)
+            dist_min = dist;
+            P_start = P_circle;
+            t_start = t(k); 
+        end
+    end
+end
